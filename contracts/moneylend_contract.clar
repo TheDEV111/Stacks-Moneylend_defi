@@ -1,4 +1,3 @@
-
 ;; moneylend_contract
 ;; A comprehensive DeFi money lending protocol for Stacks blockchain
 ;; Supports lending, borrowing, collateral management, and liquidations
@@ -228,6 +227,96 @@
         (ok current-debt)))
         ERR_LOAN_NOT_FOUND
     )
+)
+
+;; Liquidate undercollateralized loan
+(define-public (liquidate-loan (loan-id uint))
+    (match (map-get? loans loan-id)
+        loan-data
+        (let (
+            (borrower (get borrower loan-data))
+            (current-debt (calculate-current-debt loan-id))
+            (collateral (get collateral loan-data))
+            (penalty-amount (/ (* collateral LIQUIDATION_PENALTY) u100))
+            (liquidator-reward (- collateral penalty-amount))
+        )
+        (asserts! (get is-active loan-data) ERR_ALREADY_REPAID)
+        (asserts! (is-liquidatable loan-id) ERR_LIQUIDATION_NOT_ALLOWED)
+        
+        ;; Transfer liquidator reward
+        (try! (as-contract (stx-transfer? liquidator-reward tx-sender tx-sender)))
+        
+        ;; Keep penalty as protocol fee
+        (var-set protocol-fees (+ (var-get protocol-fees) penalty-amount))
+        
+        ;; Mark loan as liquidated
+        (map-set loans loan-id (merge loan-data { 
+            is-active: false, 
+            is-liquidated: true 
+        }))
+        
+        ;; Update global state
+        (let ((principal-amount (get amount loan-data)))
+        (var-set total-borrowed (- (var-get total-borrowed) principal-amount))
+        (update-rates)
+        (ok liquidator-reward)))
+        ERR_LOAN_NOT_FOUND
+    )
+)
+
+;; Get loan details
+(define-read-only (get-loan (loan-id uint))
+    (map-get? loans loan-id)
+)
+
+;; Get user's deposit balance
+(define-read-only (get-user-balance (user principal))
+    (default-to u0 (map-get? user-deposits user))
+)
+
+;; Get current debt for a loan
+(define-read-only (get-current-debt (loan-id uint))
+    (calculate-current-debt loan-id)
+)
+
+;; Get protocol statistics
+(define-read-only (get-protocol-stats)
+    {
+        total-pool-balance: (var-get total-pool-balance),
+        total-borrowed: (var-get total-borrowed),
+        utilization-rate: (var-get utilization-rate),
+        current-interest-rate: (var-get current-interest-rate),
+        protocol-fees: (var-get protocol-fees)
+    }
+)
+
+;; Get user's loans
+(define-read-only (get-user-loans (user principal))
+    (default-to (list) (map-get? user-loans user))
+)
+
+;; Check if loan is liquidatable
+(define-read-only (can-liquidate (loan-id uint))
+    (is-liquidatable loan-id)
+)
+
+;; Emergency functions (only contract owner)
+(define-public (emergency-pause)
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+        ;; Could implement pause functionality here
+        (ok true)
+    )
+)
+
+;; Withdraw protocol fees (only contract owner)
+(define-public (withdraw-fees (amount uint))
+    (let ((fees (var-get protocol-fees)))
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (<= amount fees) ERR_INSUFFICIENT_FUNDS)
+    (try! (as-contract (stx-transfer? amount tx-sender CONTRACT_OWNER)))
+    (var-set protocol-fees (- fees amount))
+    (ok amount))
 )
 
 
